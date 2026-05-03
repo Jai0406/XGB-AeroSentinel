@@ -169,24 +169,7 @@ XGB-AeroSentinel/
 
 **Sample Request:**
 ```
-POST /analyze?query=Is it safe to exercise in Mumbai right now?
-```
-
-**Sample Response (condensed):**
-```json
-{
-  "location": { "city": "Mumbai, India", "latitude": 19.07, "longitude": 72.87 },
-  "assessment": {
-    "final_risk": "MODERATE",
-    "composite_score": 42.5,
-    "composite_grade": "MODERATE",
-    "final_verdict": "Air quality is excellent, but mild weather disturbances require a MODERATE level of caution."
-  },
-  "advisory": [
-    "Moderate risk — sensitive individuals should limit prolonged outdoor exposure.",
-    "Heat stress risk (34°C): High fluid intake essential; seek shade."
-  ]
-}
+POST /analyze?query=Whats's weather in Mumbai?
 ```
 
 ---

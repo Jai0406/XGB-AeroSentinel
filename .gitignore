@@ -1,0 +1,14 @@
+# Virtual Environment
+myvenv/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# IDE Settings (VS Code)
+.vscode/
+
+# Env variables (Future proofing, in case kabhi add karo)
+.env
+
+weather_master_v1.pkl

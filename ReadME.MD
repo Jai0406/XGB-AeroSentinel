@@ -1,7 +1,7 @@
-# Weather Master V1 🌦️🧠
+# XGB-AeroSentinel 🌦️
 ### AI-Powered Predictive Meteorological Intelligence & Risk Advisory Engine
 
-Weather Master V1 is a privacy-first, hybrid intelligence engine that combines XGBoost-driven meteorological forecasting with a rule-based air toxicity expert system. It doesn't just show the weather — it analyzes environmental hazards and generates tiered health advisories using a fully asynchronous stack.
+XGB-AeroSentinel is a privacy-first, hybrid intelligence engine that combines XGBoost-driven meteorological forecasting with a rule-based air toxicity expert system. It doesn't just show the weather — it analyzes environmental hazards and generates tiered health advisories using a fully asynchronous stack.
 
 ---
 
@@ -123,8 +123,8 @@ POST /analyze
 
 **1. Clone the repository**
 ```bash
-git clone https://github.com/Jai0406/Weather-Master-V1.git
-cd Weather-Master-V1
+git clone https://github.com/Jai0406/XGB-AeroSentinel
+cd XGB-AeroSentinel
 ```
 
 **2. Install dependencies**
@@ -149,11 +149,11 @@ The interactive API docs will be available at `http://127.0.0.1:8000/docs`.
 ## 📂 Project Structure
 
 ```
-Weather-Master-V1/
+XGB-AeroSentinel/
 │
 ├── app.py                          # FastAPI app — NLP, telemetry, risk logic
 ├── weather_prediction_model.ipynb  # Training pipeline, feature engineering & evaluation
-├── weather_master_v3.pkl           # Serialized XGBoost master brain
+├── weather_master_v1.pkl           # Serialized XGBoost master brain
 ├── requirements.txt                # Project dependencies
 └── global_weather_master.csv       # 43,812-row global dataset used for training
 ```

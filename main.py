@@ -1,5 +1,4 @@
 import spacy
-import re
 import pytz
 import pandas as pd
 import pickle
@@ -8,11 +7,11 @@ import asyncio
 from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
-# ==============================================================================
+
 # 1. LIFESPAN
-# ==============================================================================
+
 nlp      = None
 ai_model = None
 
@@ -28,32 +27,13 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(
-    title="Predictive Meteorological Intelligence API",
+    title="XGB-AeroSentinel API",
     description="Real-time weather and air quality risk analysis powered by XGBoost.",
     version="1.0.0",
     lifespan=lifespan,
 )
 
-# ==============================================================================
 # 2. PYDANTIC MODELS
-# ==============================================================================
-class CityRequest(BaseModel):
-    query: str = Field(
-        ...,
-        min_length=2,
-        max_length=100,
-        description="City name or natural language query like 'weather in Delhi'",
-        examples=["Delhi", "whats the aqi of Mumbai"],
-    )
-
-    @field_validator("query")
-    @classmethod
-    def sanitize_query(cls, v: str) -> str:
-        v = v.strip()
-        if v.isdigit():
-            raise ValueError("Query must be a valid location string, not purely numeric.")
-        return v
-
 
 class LocationInfo(BaseModel):
     city:      str
@@ -83,7 +63,6 @@ class AirQuality(BaseModel):
     o3_ugm3:            float | None
     co_mgm3:            float | None
 
-
 class RiskAssessment(BaseModel):
     weather_risk:         str
     aqi_risk:             str
@@ -100,7 +79,6 @@ class TimeSync(BaseModel):
     ist:   str
     local: str
 
-
 class AnalysisResponse(BaseModel):
     location:    LocationInfo
     times:       TimeSync
@@ -109,33 +87,21 @@ class AnalysisResponse(BaseModel):
     assessment:  RiskAssessment
     advisory:    list[str]
 
-
-# ==============================================================================
 # 3. NLP NOISE TOKEN SET
-# FIX: Expanded with temporal and descriptive words that appear in natural
-#      language weather queries but are not part of the city name.
-#      This replaces the old regex-strip approach for the fallback path.
-# ==============================================================================
 NOISE_TOKENS = {
-    # question/command words
     "what", "whats", "how", "hows", "show", "tell", "check",
     "get", "give", "can", "you", "please", "is", "it",
-    # weather domain words
     "weather", "aqi", "air", "quality", "temperature", "forecast",
     "sunny", "raining", "hot", "cold", "humid", "outside",
-    # prepositions / articles
     "in", "of", "for", "about", "the", "a", "an", "at", "me",
     "city", "there", "like",
-    # FIX: temporal words — were completely missing before
     "today", "tonight", "tomorrow", "now", "right", "currently",
     "this", "morning", "evening", "night", "afternoon", "atm",
     "moment", "time", "week",
 }
 
-
-# ==============================================================================
 # 4. ML ENGINE
-# ==============================================================================
+
 RISK_LABELS = {0: "SAFE", 1: "MODERATE", 2: "HIGH RISK"}
 
 def predict_ml_risk(w: dict) -> int:
@@ -144,10 +110,6 @@ def predict_ml_risk(w: dict) -> int:
     heat_idx = w["temp_mean"] * (w["humidity"] / 100.0)
     features = pd.DataFrame([{
         "Temp_Mean_C":         w["temp_mean"],
-        # FIX: temp_max (daily max) - temp_mean (current obs) is conceptually
-        # inconsistent. Using temp_mean as the reference for fluctuation since
-        # both should ideally be from the same observation window.
-        # If your training data used daily_max - current_obs, revert this.
         "Temp_Fluctuation":    abs(w["temp_max"] - w["temp_mean"]),
         "Humidity_Mean_pct":   w["humidity"],
         "Heat_Humidity_Index": heat_idx,
@@ -157,19 +119,16 @@ def predict_ml_risk(w: dict) -> int:
     }])
     return int(ai_model.predict(features)[0])
 
-
-# ==============================================================================
 # 5. RISK & NARRATIVE ENGINE
-# ==============================================================================
-def get_aqi_risk(aqi) -> tuple[int, str]:
+
+def get_aqi_risk(aqi) -> int:
     try:
         val = float(aqi)
     except (TypeError, ValueError):
-        return 0, "N/A"
-    if val > 150:   return 2, f"{val:.0f} - Unhealthy"
-    elif val > 100: return 1, f"{val:.0f} - Sensitive Groups"
-    elif val > 50:  return 1, f"{val:.0f} - Moderate"
-    else:           return 0, f"{val:.0f} - Good"
+        return 0
+    if val > 150:   return 2
+    elif val > 50:  return 1
+    else:           return 0
 
 
 def get_aqi_label(val: float) -> str:
@@ -304,7 +263,7 @@ def build_final_verdict(ml_risk: int, aqi_risk: int, final_risk: int) -> str:
     )
 
 
-def build_advisory(w: dict, a: dict, final_risk: int) -> list[str]:
+def build_advisory(w: dict, a: dict, final_risk: int, dominant: str) -> list[str]:
     temp    = w["temp_mean"]
     aqi_val = a["aqi"] if a["aqi"] is not None else 0.0
     bullets: list[str] = []
@@ -401,7 +360,6 @@ def build_advisory(w: dict, a: dict, final_risk: int) -> list[str]:
         ])
 
     if aqi_val > 50:
-        dominant = get_dominant_pollutant(a)
         if "PM2.5" in dominant or "PM10" in dominant:
             bullets.extend([
                 "Particulate threat: The dominant pollutant consists of microscopic solid particles that can cross into the bloodstream.",
@@ -436,9 +394,8 @@ def build_advisory(w: dict, a: dict, final_risk: int) -> list[str]:
     return bullets
 
 
-# ==============================================================================
 # 6. ASYNC TELEMETRY ENGINE
-# ==============================================================================
+
 class AsyncGlobalWeatherEngine:
     BASE_URL = "https://api.open-meteo.com/v1/forecast"
     AQI_URL  = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -446,7 +403,7 @@ class AsyncGlobalWeatherEngine:
 
     @staticmethod
     async def get_coords(city: str) -> tuple | None:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             res  = await client.get(
                 AsyncGlobalWeatherEngine.GEO_URL,
                 params={"name": city, "count": 1, "format": "json"},
@@ -459,14 +416,14 @@ class AsyncGlobalWeatherEngine:
 
     @staticmethod
     async def fetch_metrics(lat: float, lon: float) -> tuple[dict, dict]:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             w_res, a_res = await asyncio.gather(
                 client.get(AsyncGlobalWeatherEngine.BASE_URL, params={
-                    "latitude":     lat,
-                    "longitude":    lon,
-                    "current":      "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation",
-                    "daily":        "temperature_2m_max",
-                    "timezone":     "auto",
+                    "latitude":      lat,
+                    "longitude":     lon,
+                    "current":       "temperature_2m,relative_humidity_2m,wind_speed_10m,precipitation",
+                    "daily":         "temperature_2m_max",
+                    "timezone":      "auto",
                     "forecast_days": 1,
                 }),
                 client.get(AsyncGlobalWeatherEngine.AQI_URL, params={
@@ -510,51 +467,23 @@ class AsyncGlobalWeatherEngine:
 
         return weather, aqi
 
-
-# ==============================================================================
 # 7. NLP & TIME UTILITIES
-# ==============================================================================
+
 def extract_city(text: str) -> str:
-    """
-    FIX — Complete rewrite of city extraction logic.
-
-    Old approach: strip tokens via regex first, then pass dirty text to spaCy.
-    Problem: spaCy received garbage like "right now boston" instead of clean input,
-    making GPE detection unreliable on the small model.
-
-    New approach:
-      1. Run spaCy on the RAW original text — highest accuracy, no corruption.
-      2. If spaCy finds a GPE/LOC entity, return it immediately.
-      3. Only if spaCy finds nothing, fall back to token-level noise removal
-         using the NOISE_TOKENS set (which now includes temporal words).
-      4. Guard against empty/junk fallback result before returning.
-
-    This correctly handles queries like:
-      - "is it sunny today in new delhi"   -> spaCy -> "New Delhi"
-      - "right now weather boston"         -> spaCy -> "Boston"
-      - "whats the aqi of new york today"  -> spaCy -> "New York"
-      - "temperature right now in tokyo"   -> spaCy -> "Tokyo"
-    """
-    # Step 1: spaCy on raw text — do NOT pre-strip
     if nlp:
         doc  = nlp(text)
         ents = [e.text for e in doc.ents if e.label_ in ("GPE", "LOC")]
         if ents:
-            return ents[-1]  # last entity is usually the city in natural queries
+            return ents[-1]
 
-    # Step 2: Token-level fallback using domain noise set
     tokens   = text.lower().split()
     filtered = [t for t in tokens if t not in NOISE_TOKENS]
+    result   = " ".join(filtered).strip()
 
-    result = " ".join(filtered).strip()
-
-    # Step 3: Guard — if filtering ate everything or left junk, return original
-    # and let the geocoder produce a clean 404 rather than sending garbage.
     if not result or len(result) < 2:
         return text.strip()
 
     return result.title()
-
 
 def get_global_times(tz_str: str) -> dict:
     utc_now = datetime.now(pytz.utc)
@@ -568,7 +497,6 @@ def get_global_times(tz_str: str) -> dict:
         "local": local.strftime(fmt),
     }
 
-
 def time_of_day_trend(local_time_str: str) -> str:
     try:
         hour = datetime.strptime(local_time_str, "%Y-%m-%d %H:%M %Z").hour
@@ -580,9 +508,8 @@ def time_of_day_trend(local_time_str: str) -> str:
     else:                  return "Stable - overnight low activity"
 
 
-# ==============================================================================
 # 8. ENDPOINTS
-# ==============================================================================
+
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health():
     return {"status": "ok", "version": "1.0.0"}
@@ -624,17 +551,16 @@ async def analyze(
         )
 
     lat, lon, full_loc = coords
-    w, a = await AsyncGlobalWeatherEngine.fetch_metrics(lat, lon)
-
-    ml_risk           = predict_ml_risk(w)
-    aqi_risk, _       = get_aqi_risk(a["aqi"])
-    final_risk        = max(ml_risk, aqi_risk)
-    score, grade      = composite_score(ml_risk, aqi_risk, w, a["aqi"])
-    dominant          = get_dominant_pollutant(a)
-    times             = get_global_times(w["timezone"])
-    trend             = time_of_day_trend(times["local"])
-    weather_exp       = get_weather_explanation(w)
-    verdict           = build_final_verdict(ml_risk, aqi_risk, final_risk)
+    w, a       = await AsyncGlobalWeatherEngine.fetch_metrics(lat, lon)
+    ml_risk    = predict_ml_risk(w)
+    aqi_risk   = get_aqi_risk(a["aqi"])
+    final_risk = max(ml_risk, aqi_risk)
+    score, grade = composite_score(ml_risk, aqi_risk, w, a["aqi"])
+    dominant   = get_dominant_pollutant(a)
+    times      = get_global_times(w["timezone"])
+    trend      = time_of_day_trend(times["local"])
+    weather_exp = get_weather_explanation(w)
+    verdict    = build_final_verdict(ml_risk, aqi_risk, final_risk)
 
     risk_phrasing = {
         0: "indicating a safe environmental profile",
@@ -686,5 +612,5 @@ async def analyze(
             ),
             final_verdict=verdict,
         ),
-        advisory=build_advisory(w, a, final_risk),
+        advisory=build_advisory(w, a, final_risk, dominant),
     )

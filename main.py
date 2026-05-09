@@ -10,8 +10,10 @@ from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from bs4 import BeautifulSoup
 import urllib.parse
+from components import NOISE_TOKENS, RISK_LABELS, get_verdict_text, get_advisory_bullets
 
-# 1. LIFESPAN
+
+# 1 LIFESPAN
 nlp      = None
 ai_model = None
 
@@ -33,14 +35,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 2. PYDANTIC MODELS
+# 2 PYDANTIC MODELS
 
 class LocationInfo(BaseModel):
     city:      str
     latitude:  float
     longitude: float
     timezone:  str
-
 
 class WeatherMetrics(BaseModel):
     temperature_c:    float
@@ -49,7 +50,6 @@ class WeatherMetrics(BaseModel):
     wind_speed_kmh:   float
     precipitation_mm: float
     observed_at:      str
-
 
 class AirQuality(BaseModel):
     us_aqi:             int | None
@@ -73,16 +73,15 @@ class RiskAssessment(BaseModel):
     air_toxicity_summary: str
     final_verdict:        str
 
-
 class TimeSync(BaseModel):
     utc:   str
     ist:   str
     local: str
 
 class NewsItem(BaseModel):
-    title: str
-    description: str
-    link: str
+    title:        str
+    description:  str
+    link:         str
     published_at: str
 
 class AnalysisResponse(BaseModel):
@@ -93,23 +92,21 @@ class AnalysisResponse(BaseModel):
     assessment:  RiskAssessment
     advisory:    list[str]
     news:        list[NewsItem]
+    
+class LocationCandidate(BaseModel):
+    name:      str
+    admin1:    str
+    country:   str
+    latitude:  float
+    longitude: float
+    timezone:  str | None = None
 
-# 3. NLP NOISE TOKEN SET
-NOISE_TOKENS = {
-    "what", "whats", "how", "hows", "show", "tell", "check",
-    "get", "give", "can", "you", "please", "is", "it",
-    "weather", "aqi", "air", "quality", "temperature", "forecast",
-    "sunny", "raining", "hot", "cold", "humid", "outside",
-    "in", "of", "for", "about", "the", "a", "an", "at", "me",
-    "city", "there", "like",
-    "today", "tonight", "tomorrow", "now", "right", "currently",
-    "this", "morning", "evening", "night", "afternoon", "atm",
-    "moment", "time", "week",
-}
+class SearchResponse(BaseModel):
+    candidates: list[LocationCandidate]
+    auto_selected: bool  # True = sirf 1 result tha, seedha analyze karo
 
-# 4. ML ENGINE
 
-RISK_LABELS = {0: "SAFE", 1: "MODERATE", 2: "HIGH RISK"}
+# 3. ML ENGINE
 
 def predict_ml_risk(w: dict) -> int:
     if not ai_model:
@@ -126,17 +123,17 @@ def predict_ml_risk(w: dict) -> int:
     }])
     return int(ai_model.predict(features)[0])
 
-# 5. RISK & NARRATIVE ENGINE
+
+# 4 RISK & NARRATIVE ENGINE
 
 def get_aqi_risk(aqi) -> int:
     try:
         val = float(aqi)
     except (TypeError, ValueError):
         return 0
-    if val > 150:   return 2
-    elif val > 50:  return 1
-    else:           return 0
-
+    if val > 150:  return 2
+    elif val > 50: return 1
+    else:          return 0
 
 def get_aqi_label(val: float) -> str:
     if val > 500:   return "OFF CHARTS"
@@ -147,19 +144,16 @@ def get_aqi_label(val: float) -> str:
     elif val > 50:  return "MODERATE"
     else:           return "GOOD"
 
-
 def composite_score(ml_risk: int, aqi_risk: int, w: dict, aqi_val) -> tuple[float, str]:
     try:
         aqi_float = float(aqi_val)
     except (TypeError, ValueError):
         aqi_float = 0.0
-
     ml_score   = (ml_risk / 2) * 40
     aqi_score  = min(aqi_float / 500, 1.0) * 40
     heat_idx   = w["temp_mean"] * (w["humidity"] / 100.0)
     heat_bonus = min((heat_idx - 20) / 30, 1.0) * 20 if heat_idx > 20 else 0.0
     score      = round(min(ml_score + aqi_score + heat_bonus, 100), 1)
-
     if score >= 70:   grade = "CRITICAL"
     elif score >= 50: grade = "HIGH"
     elif score >= 30: grade = "MODERATE"
@@ -208,7 +202,6 @@ def get_dominant_pollutant(a: dict) -> str:
             sub["CO"]  = 200 if v > 12.4 else (100 if v > 4.4 else 50)
     except Exception:
         pass
-
     if not sub:
         return "Unknown"
     dominant = max(sub, key=sub.get)
@@ -216,12 +209,10 @@ def get_dominant_pollutant(a: dict) -> str:
     others   = [p for p, s in sub.items() if p != dominant and s >= score * 0.80 and s > 100]
     return f"{dominant} (also elevated: {', '.join(others)})" if others else dominant
 
-
 def get_weather_explanation(w: dict) -> str:
     reasons       = []
     heat_idx      = w["temp_mean"] * (w["humidity"] / 100.0)
     combo_matched = False
-
     if w["temp_mean"] > 35 and w["humidity"] < 25:
         reasons.append(f"extreme dry heat ({w['temp_mean']}C, {w['humidity']}%) - high dehydration and dust risk")
         combo_matched = True
@@ -234,170 +225,20 @@ def get_weather_explanation(w: dict) -> str:
     elif w["precipitation"] > 10 and w["wind_speed"] > 40:
         reasons.append(f"storm conditions (rain: {w['precipitation']}mm, wind: {w['wind_speed']} km/h) - low visibility")
         combo_matched = True
-
     if not combo_matched:
         if w["temp_mean"] > 35:   reasons.append(f"extreme heat ({w['temp_mean']}C)")
         elif w["temp_mean"] < 10: reasons.append(f"cold temperature ({w['temp_mean']}C)")
         else:                     reasons.append(f"normal temperature ({w['temp_mean']}C)")
         if w["humidity"] > 80:    reasons.append(f"high humidity ({w['humidity']}%)")
         elif w["humidity"] < 20:  reasons.append(f"very dry air ({w['humidity']}%)")
-
     if not (w["precipitation"] > 10 and w["wind_speed"] > 40):
         if w["wind_speed"] > 40:   reasons.append(f"strong winds ({w['wind_speed']} km/h)")
         if w["precipitation"] > 0: reasons.append(f"active precipitation ({w['precipitation']} mm)")
-
     return ", ".join(reasons) if reasons else "conditions within normal parameters"
 
 
-def build_final_verdict(ml_risk: int, aqi_risk: int, final_risk: int) -> str:
-    combos = {
-        (0, 0): "All meteorological parameters and air quality metrics are within normal limits. The overall environmental profile is SAFE.",
-        (1, 0): "Air quality is excellent, but mild weather disturbances require a MODERATE level of caution for outdoor activities.",
-        (0, 1): "Weather conditions remain stable, but elevated air pollution levels necessitate a MODERATE health advisory for sensitive groups.",
-        (1, 1): "A combination of mild weather instability and degraded air quality results in an overall MODERATE environmental risk.",
-        (2, 0): "Despite clean atmospheric conditions, severe meteorological anomalies pose a significant hazard, triggering a HIGH RISK alert.",
-        (0, 2): "Weather conditions are relatively benign, but severe air toxicity poses a critical health threat, mandating a HIGH RISK classification.",
-        (2, 1): "Severe weather threats compounded by moderately degraded air quality elevate the environmental status to HIGH RISK.",
-        (1, 2): "Hazardous air pollution drastically overshadows mild weather instability, warranting a strict HIGH RISK health advisory.",
-        (2, 2): "CRITICAL ALERT: A dangerous convergence of extreme weather and severe air toxicity. Maximum HIGH RISK protocols must be activated immediately.",
-    }
-    return combos.get(
-        (ml_risk, aqi_risk),
-        f"System finalized an environmental status of {RISK_LABELS.get(final_risk, 'UNKNOWN')}.")
 
-
-def build_advisory(w: dict, a: dict, final_risk: int, dominant: str) -> list[str]:
-    temp    = w["temp_mean"]
-    aqi_val = a["aqi"] if a["aqi"] is not None else 0.0
-    bullets: list[str] = []
-
-    if final_risk == 0:
-        bullets.extend([
-            "Optimal conditions for all forms of outdoor exercise and extended physical activity.",
-            "No respiratory, thermal, or environmental restrictions are currently indicated.",
-            "Safe for vulnerable demographic groups (infants, elderly, immunocompromised) to be outdoors.",
-            "Natural ventilation is recommended — open windows to refresh indoor air.",
-            "Environmental stress levels are negligible; proceed with standard daily routines.",
-        ])
-    elif final_risk == 1:
-        bullets.extend([
-            "Moderate risk: General population can continue normal activities but should monitor for unusual fatigue.",
-            "Sensitive individuals with asthma or cardiac conditions must carry rescue medications.",
-            "Consider moving intense cardiovascular workouts to off-peak hours (early morning or late evening).",
-            "Elderly and children should avoid prolonged, stationary outdoor exposure.",
-            "Stay hydrated and monitor local updates in case conditions degrade further.",
-        ])
-    else:
-        bullets.extend([
-            "HIGH RISK ALERT: Immediate suspension of all non-essential outdoor physical activities is strongly advised.",
-            "Significant risk of adverse health events for both healthy individuals and sensitive groups.",
-            "Secure environments by sealing windows and utilizing active HEPA air purification.",
-            "If outdoor transit is unavoidable, strict protective gear (N95 masks or thermal layers) is required.",
-            "Keep emergency contacts readily available and monitor individuals prone to environmental stress.",
-        ])
-
-    if temp > 40:
-        bullets.extend([
-            f"Severe extreme heat ({temp}C): Restrict all outdoor exposure to strictly before 9 AM.",
-            "Hydration protocol: Consume 3-4 liters of electrolyte-infused fluids to prevent severe dehydration.",
-            "Wear loose, UV-reflective, light-colored, and highly breathable fabrics.",
-            "High probability of heatstroke — seek immediate medical attention if sweating stops or severe dizziness occurs.",
-            "Zero tolerance for leaving pets, children, or elderly in stationary or parked vehicles.",
-        ])
-    elif temp > 35:
-        bullets.extend([
-            f"Heat stress warning ({temp}C): Mandatory shade breaks for any outdoor labor.",
-            "Increase baseline water consumption by at least 50% above normal daily levels.",
-            "Apply broad-spectrum SPF 50+ sunscreen and wear wide-brimmed hats.",
-            "Retreat to climate-controlled environments between 11 AM and 4 PM.",
-            "Avoid heavy lifting or high-intensity training in direct sunlight.",
-        ])
-    elif temp < 5:
-        bullets.extend([
-            f"Severe cold ({temp}C): Critical hypothermia and frostbite risk for exposed extremities.",
-            "Use a 3-layer system: moisture-wicking base, insulating mid-layer, windproof outer shell.",
-            "Insulated gloves, thick thermal socks, and full head or ear coverings are mandatory.",
-            "Asthmatics must wear a scarf or thermal mask over the mouth — cold air triggers bronchospasms.",
-            "Prevent indoor pipe freezing and ensure safe, ventilated operation of indoor heating appliances.",
-        ])
-    elif temp < 10:
-        bullets.extend([
-            f"Cool weather ({temp}C): Slight risk of rapid core temperature drop during inactive periods.",
-            "A wind-resistant light jacket or thermal sweater is required for prolonged outdoor time.",
-            "Extended physical warm-ups are necessary before athletic activities to prevent muscle strains.",
-            "Maintain steady water intake — winter air causes invisible fluid loss through respiration.",
-            "Infants and elderly require at least one extra insulating layer compared to healthy adults.",
-        ])
-
-    if aqi_val > 300:
-        bullets.extend([
-            "HAZARDOUS AIR: Toxicity levels are catastrophic. Complete indoor lockdown required for all demographics.",
-            "Seal all window and door gaps with damp towels if active HEPA purification is unavailable.",
-            "N95, KN95, or P100 respirator masks are mandatory for any emergency outdoor evacuation.",
-            "Cease frying food, burning candles, or vacuuming — these multiply indoor particle counts significantly.",
-            "Extremely high risk of stroke, heart attack, and acute respiratory failure in vulnerable groups.",
-        ])
-    elif aqi_val > 200:
-        bullets.extend([
-            "Very poor AQI: Airborne particulate density is dangerously high. Cease all outdoor physical labor.",
-            "Well-fitted N95 masks must be worn continuously outside — surgical or cloth masks are ineffective.",
-            "Run HVAC systems exclusively on recirculate mode to block outside air from entering.",
-            "Even healthy individuals will likely experience throat irritation, coughing, and chest tightness.",
-            "Asthmatics should consult doctors about increasing preventative inhaler usage.",
-        ])
-    elif aqi_val > 150:
-        bullets.extend([
-            "Unhealthy air: Prolonged exposure will deposit harmful micro-particulates deep into lung tissues.",
-            "Swap all outdoor cardiovascular routines for indoor gym sessions or home workouts.",
-            "N95 masks are strongly recommended for anyone spending more than 30 consecutive minutes outside.",
-            "Elderly and children must remain indoors to prevent long-term lung capacity degradation.",
-            "Run standalone HEPA air purifiers at maximum capacity in primary living or sleeping spaces.",
-        ])
-    elif aqi_val > 100:
-        bullets.extend([
-            "Sensitive group warning: Air chemistry is degraded enough to trigger acute asthmatic reactions.",
-            "Reduce the intensity and duration of heavy outdoor workouts — switch from running to walking.",
-            "Watch for unusual coughing, shortness of breath, or excessive eye watering.",
-            "Limit time spent near heavy traffic intersections, highways, or active construction sites.",
-            "Individuals with severe seasonal allergies should consider taking antihistamines pre-emptively.",
-        ])
-
-    if aqi_val > 50:
-        if "PM2.5" in dominant or "PM10" in dominant:
-            bullets.extend([
-                "Particulate threat: The dominant pollutant consists of microscopic solid particles that can cross into the bloodstream.",
-                "Stay entirely clear of dust-heavy zones, industrial areas, and heavy diesel traffic corridors.",
-                "Only properly sealed N95/KN95 respirators can filter PM2.5 effectively — scarves are not effective.",
-                "Wear wrap-around sunglasses or clear protective eyewear to prevent ocular irritation.",
-            ])
-        elif "Ozone" in dominant:
-            bullets.extend([
-                "Ozone chemical threat: Ground-level ozone is corrosive to lung linings, acting like an internal chemical burn.",
-                "Ozone concentration peaks with sunlight and heat — shift all outdoor tasks to early morning or after sunset.",
-                "Expect increased wheezing and a temporary reduction in lung capacity even in healthy athletes.",
-                "Standard N95 masks do not filter ozone gas — retreating indoors is the only effective defense.",
-            ])
-        elif "NO2" in dominant or "SO2" in dominant:
-            bullets.extend([
-                "Chemical gas threat: Elevated NO2 or SO2 levels indicate high localized combustion or industrial exhaust.",
-                "Strictly avoid commuting along major highways, truck routes, or proximity to thermal power plants.",
-                "If a sharp or acrid smell is detected outdoors, evacuate the immediate area at once.",
-                "Asthmatics and COPD patients are extremely susceptible to severe airway constriction from these gases.",
-            ])
-
-    if w["precipitation"] > 0:
-        bullets.extend([
-            f"Active rainfall ({w['precipitation']}mm): Surface traction is compromised — high risk of hydroplaning for vehicles.",
-            "Atmospheric water density will reduce driving and pedestrian visibility — use headlights.",
-            "Waterproof outer shells, high-traction footwear, and reflective materials are advised.",
-            "Rain may temporarily scrub PM2.5 from the air, but early rain can create hazardous acidic runoff.",
-            "Seek grounded indoor shelter immediately if precipitation is accompanied by thunder or lightning.",
-        ])
-
-    return bullets
-
-
-# 6. ASYNC TELEMETRY ENGINE
+# 5 ASYNC TELEMETRY ENGINE
 
 class AsyncGlobalWeatherEngine:
     BASE_URL = "https://api.open-meteo.com/v1/forecast"
@@ -405,22 +246,9 @@ class AsyncGlobalWeatherEngine:
     GEO_URL  = "https://geocoding-api.open-meteo.com/v1/search"
 
     @staticmethod
-    async def get_coords(city: str) -> tuple | None:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            res  = await client.get(
-                AsyncGlobalWeatherEngine.GEO_URL,
-                params={"name": city, "count": 1, "format": "json"},
-            )
-            data = res.json()
-        if "results" in data:
-            r = data["results"][0]
-            return r["latitude"], r["longitude"], f"{r['name']}, {r.get('country', '')}"
-        return None
-    
-    @staticmethod
     async def fetch_local_news(city: str) -> list[dict]:
-        q_weather = urllib.parse.quote(f"{city} weather")
-        q_city    = urllib.parse.quote(city)
+        q_weather  = urllib.parse.quote(f"{city} weather")
+        q_city     = urllib.parse.quote(city)
         url_main   = f"https://news.google.com/rss/search?q={q_weather}&hl=en-US&gl=US&ceid=US:en"
         url_backup = f"https://news.google.com/rss/search?q={q_city}&hl=en-US&gl=US&ceid=US:en"
 
@@ -430,7 +258,7 @@ class AsyncGlobalWeatherEngine:
                 headers={"User-Agent": "Mozilla/5.0"},
                 follow_redirects=True
             ) as client:
-                res1 = await client.get(url_main)
+                res1  = await client.get(url_main)
                 items = []
 
                 if res1.status_code == 200:
@@ -489,7 +317,6 @@ class AsyncGlobalWeatherEngine:
                     })
 
                 return news_list
-
         except Exception as e:
             print(f"News fetch error: {e}")
 
@@ -545,10 +372,9 @@ class AsyncGlobalWeatherEngine:
             "o3":   num(ca.get("ozone")),
             "co":   round(co_raw / 1000, 3) if co_raw is not None else None,
         }
-
         return weather, aqi
 
-# 7. NLP & TIME UTILITIES
+# 6 NLP & TIME UTILITIES
 
 def extract_city(text: str) -> str:
     if nlp:
@@ -556,14 +382,12 @@ def extract_city(text: str) -> str:
         ents = [e.text for e in doc.ents if e.label_ in ("GPE", "LOC")]
         if ents:
             return ents[-1]
-
-    tokens   = text.lower().split()
-    filtered = [t for t in tokens if t not in NOISE_TOKENS]
-    result   = " ".join(filtered).strip()
-
+    clean_text = text.replace(",", " ")
+    tokens     = clean_text.split()
+    filtered   = [t for t in tokens if t.lower() not in NOISE_TOKENS]
+    result     = " ".join(filtered).strip()
     if not result or len(result) < 2:
-        return text.strip()
-
+        return text.strip().title()
     return result.title()
 
 def get_global_times(tz_str: str) -> dict:
@@ -589,61 +413,45 @@ def time_of_day_trend(local_time_str: str) -> str:
     else:                  return "Stable - overnight low activity"
 
 
-# 8. ENDPOINTS
+# 7 ENDPOINTS
 
 @app.get("/health", status_code=status.HTTP_200_OK)
 async def health():
     return {"status": "ok", "version": "1.0.0"}
 
 
-@app.post(
-    "/analyze",
-    response_model=AnalysisResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Generate Environmental Risk Advisory",
-    description=(
-        "Fetches real-time weather and AQI data, processes it through the ML engine, "
-        "and generates a detailed JSON advisory report."
-    ),
-)
+@app.post("/analyze", response_model=AnalysisResponse, status_code=status.HTTP_200_OK)
 async def analyze(
-    query: str = Query(
-        ...,
-        min_length=2,
-        max_length=100,
-        title="Location Query",
-        description="Enter a city name or natural language query.",
-    )
+    query:     str   = Query(..., min_length=2, max_length=100),
+    latitude:  float = Query(...),
+    longitude: float = Query(...),
+    timezone:  str   = Query(None),
+    city:      str   = Query(None),
 ):
-    query = query.strip()
-    if query.isdigit():
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Query must be a valid location string, not purely numeric.",
-        )
+    query    = query.strip()
+    lat      = latitude
+    lon      = longitude
+    full_loc = city or extract_city(query)
+    tz       = timezone or "UTC"
 
-    city_name = extract_city(query)
-    coords    = await AsyncGlobalWeatherEngine.get_coords(city_name)
-
-    if not coords:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Location entity '{city_name}' could not be resolved.",
-        )
-        
-    lat, lon, full_loc = coords  
+    # Weather + news parallel fetch
     metrics_task = AsyncGlobalWeatherEngine.fetch_metrics(lat, lon)
-    news_task    = AsyncGlobalWeatherEngine.fetch_local_news(city_name)
+    news_task    = AsyncGlobalWeatherEngine.fetch_local_news(city or extract_city(query))
     (w, a), news_data = await asyncio.gather(metrics_task, news_task)
+
+    # Timezone override if   user selectss
+    if tz and tz != "UTC":
+        w["timezone"] = tz
+
     ml_risk    = predict_ml_risk(w)
     aqi_risk   = get_aqi_risk(a["aqi"])
     final_risk = max(ml_risk, aqi_risk)
     score, grade = composite_score(ml_risk, aqi_risk, w, a["aqi"])
-    dominant   = get_dominant_pollutant(a)
-    times      = get_global_times(w["timezone"])
-    trend      = time_of_day_trend(times["local"])
+    dominant    = get_dominant_pollutant(a)
+    times       = get_global_times(w["timezone"])
+    trend       = time_of_day_trend(times["local"])
     weather_exp = get_weather_explanation(w)
-    verdict    = build_final_verdict(ml_risk, aqi_risk, final_risk)
+    verdict     = get_verdict_text(ml_risk, aqi_risk, final_risk)
 
     risk_phrasing = {
         0: "indicating a safe environmental profile",
@@ -695,6 +503,52 @@ async def analyze(
             ),
             final_verdict=verdict,
         ),
-        advisory=build_advisory(w, a, final_risk, dominant),
-        news=news_data
+        advisory=get_advisory_bullets(w, a, final_risk, dominant),
+        news=news_data,
+    )
+    
+    
+@app.get("/search", status_code=status.HTTP_200_OK)
+async def search_location(
+    query: str = Query(..., min_length=2, max_length=100)
+):
+    query = query.strip()
+    city_name = extract_city(query)
+
+    country_hint = ""
+    if nlp:
+        doc  = nlp(query)
+        ents = [e.text for e in doc.ents if e.label_ in ("GPE", "LOC")]
+        if len(ents) >= 2:
+            country_hint = ents[0]
+
+    search_term = f"{city_name}, {country_hint}" if country_hint else city_name
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        res  = await client.get(
+            AsyncGlobalWeatherEngine.GEO_URL,
+            params={"name": search_term, "count": 10, "format": "json"},
+        )
+        data = res.json()
+
+    if "results" not in data or not data["results"]:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No locations found for '{city_name}'.",
+        )
+
+    candidates = []
+    for r in data["results"]:
+        candidates.append(LocationCandidate(
+            name      = r["name"],
+            admin1    = r.get("admin1", ""),
+            country   = r.get("country", ""),
+            latitude  = r["latitude"],
+            longitude = r["longitude"],
+            timezone  = r.get("timezone", "UTC"),
+        ))
+
+    return SearchResponse(
+        candidates    = candidates,
+        auto_selected = len(candidates) == 1,
     )

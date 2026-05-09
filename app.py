@@ -233,7 +233,6 @@ if nav_choice == "Atmosphere Pulse":
         )
         submitted = st.form_submit_button("Search Location", type="primary")
 
-    # result_area wraps ALL output — old content saaf ho jaata hai har naye submit pe
     result_area = st.container()
 
     if submitted:
@@ -341,6 +340,31 @@ if nav_choice == "Atmosphere Pulse":
                                         {advisory_html}
                                     </ul>
                                 </div>""", unsafe_allow_html=True)
+                            
+                            
+                            if data.get("news"):
+                                news_html = "".join([
+                                    f"<li style='margin-bottom:18px;border-bottom:1px solid rgba(255,255,255,0.07);padding-bottom:14px;'>"
+                                    f"<a href='{item['link']}' target='_blank' style='color:#A7F3D0;text-decoration:none;"
+                                    f"font-weight:600;font-size:0.97rem;line-height:1.4;display:block;margin-bottom:4px;"
+                                    f"transition:color 0.2s;' onmouseover=\"this.style.color='#FFFFFF'\" "
+                                    f"onmouseout=\"this.style.color='#A7F3D0'\">{item['title']}</a>"
+                                    f"<span style='font-size:0.83rem;color:#CBD5E1;line-height:1.5;display:block;margin-bottom:5px;'>"
+                                    f"{item.get('description', 'Click to read the full article.')}</span>"
+                                    f"<span style='font-size:0.78rem;color:#7DD3FC;'> {item['published_at']}</span>"
+                                    f"</li>"
+                                    for item in data["news"]
+                                ])
+                                
+                                st.markdown(f"""
+                                    <div class="glass-card" style="height:auto;margin-bottom:30px;">
+                                        <h3 style="margin-top:0;color:#FFFFFF;font-size:1.2rem;
+                                                   border-bottom:1px solid rgba(255,255,255,0.15);padding-bottom:10px;">
+                                            Local Weather Intel</h3>
+                                        <ul style="list-style-type:none;padding-left:0;margin-top:15px;">
+                                            {news_html}
+                                        </ul>
+                                    </div>""", unsafe_allow_html=True)
 
                             _, col_center, _ = st.columns([4, 2, 4])
                             with col_center:

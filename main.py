@@ -8,10 +8,10 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, status
 from pydantic import BaseModel, Field
-
+from bs4 import BeautifulSoup
+import urllib.parse
 
 # 1. LIFESPAN
-
 nlp      = None
 ai_model = None
 
@@ -79,6 +79,12 @@ class TimeSync(BaseModel):
     ist:   str
     local: str
 
+class NewsItem(BaseModel):
+    title: str
+    description: str
+    link: str
+    published_at: str
+
 class AnalysisResponse(BaseModel):
     location:    LocationInfo
     times:       TimeSync
@@ -86,6 +92,7 @@ class AnalysisResponse(BaseModel):
     air_quality: AirQuality
     assessment:  RiskAssessment
     advisory:    list[str]
+    news:        list[NewsItem]
 
 # 3. NLP NOISE TOKEN SET
 NOISE_TOKENS = {
@@ -157,9 +164,7 @@ def composite_score(ml_risk: int, aqi_risk: int, w: dict, aqi_val) -> tuple[floa
     elif score >= 50: grade = "HIGH"
     elif score >= 30: grade = "MODERATE"
     else:             grade = "LOW"
-
     return score, grade
-
 
 def get_dominant_pollutant(a: dict) -> str:
     def pm25_to_aqi(c):
@@ -206,7 +211,6 @@ def get_dominant_pollutant(a: dict) -> str:
 
     if not sub:
         return "Unknown"
-
     dominant = max(sub, key=sub.get)
     score    = sub[dominant]
     others   = [p for p, s in sub.items() if p != dominant and s >= score * 0.80 and s > 100]
@@ -259,8 +263,7 @@ def build_final_verdict(ml_risk: int, aqi_risk: int, final_risk: int) -> str:
     }
     return combos.get(
         (ml_risk, aqi_risk),
-        f"System finalized an environmental status of {RISK_LABELS.get(final_risk, 'UNKNOWN')}."
-    )
+        f"System finalized an environmental status of {RISK_LABELS.get(final_risk, 'UNKNOWN')}.")
 
 
 def build_advisory(w: dict, a: dict, final_risk: int, dominant: str) -> list[str]:
@@ -413,6 +416,84 @@ class AsyncGlobalWeatherEngine:
             r = data["results"][0]
             return r["latitude"], r["longitude"], f"{r['name']}, {r.get('country', '')}"
         return None
+    
+    @staticmethod
+    async def fetch_local_news(city: str) -> list[dict]:
+        q_weather = urllib.parse.quote(f"{city} weather")
+        q_city    = urllib.parse.quote(city)
+        url_main   = f"https://news.google.com/rss/search?q={q_weather}&hl=en-US&gl=US&ceid=US:en"
+        url_backup = f"https://news.google.com/rss/search?q={q_city}&hl=en-US&gl=US&ceid=US:en"
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=15.0,
+                headers={"User-Agent": "Mozilla/5.0"},
+                follow_redirects=True
+            ) as client:
+                res1 = await client.get(url_main)
+                items = []
+
+                if res1.status_code == 200:
+                    soup1 = BeautifulSoup(res1.content.decode("utf-8", errors="replace"), "xml")
+                    items = soup1.find_all("item")
+
+                if len(items) < 5:
+                    res2 = await client.get(url_backup)
+                    if res2.status_code == 200:
+                        soup2 = BeautifulSoup(res2.content.decode("utf-8", errors="replace"), "xml")
+                        extra = soup2.find_all("item")
+                        existing = {i.title.text for i in items if i.title}
+                        for e in extra:
+                            if e.title and e.title.text not in existing:
+                                items.append(e)
+
+                items = items[:10]
+
+                news_list = []
+                for item in items:
+                    raw_title   = item.title.text if item.title else "Weather Update"
+                    clean_title = raw_title.encode("utf-8").decode("utf-8").rsplit(" - ", 1)[0].strip()
+
+                    desc = ""
+                    if item.description:
+                        desc_soup = BeautifulSoup(item.description.text, "html.parser")
+                        desc = desc_soup.get_text(separator=" ", strip=True).rsplit(" - ", 1)[0].strip()
+                        if len(desc) > 180:
+                            desc = desc[:177] + "..."
+                    if not desc:
+                        desc = "Click to read the full article."
+
+                    link = "#"
+                    if item.link:
+                        sib = item.link.next_sibling
+                        if sib and isinstance(sib, str) and sib.strip().startswith("http"):
+                            link = sib.strip()
+                        else:
+                            txt = item.link.get_text(strip=True)
+                            if txt.startswith("http"):
+                                link = txt
+
+                    pub_raw = item.pubDate.text if item.pubDate else ""
+                    try:
+                        from email.utils import parsedate_to_datetime
+                        dt  = parsedate_to_datetime(pub_raw)
+                        pub = dt.strftime("%d %b %Y, %I:%M %p UTC")
+                    except Exception:
+                        pub = pub_raw if pub_raw else "Recently"
+
+                    news_list.append({
+                        "title":        clean_title,
+                        "description":  desc,
+                        "link":         link,
+                        "published_at": pub,
+                    })
+
+                return news_list
+
+        except Exception as e:
+            print(f"News fetch error: {e}")
+
+        return []
 
     @staticmethod
     async def fetch_metrics(lat: float, lon: float) -> tuple[dict, dict]:
@@ -549,9 +630,11 @@ async def analyze(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Location entity '{city_name}' could not be resolved.",
         )
-
-    lat, lon, full_loc = coords
-    w, a       = await AsyncGlobalWeatherEngine.fetch_metrics(lat, lon)
+        
+    lat, lon, full_loc = coords  
+    metrics_task = AsyncGlobalWeatherEngine.fetch_metrics(lat, lon)
+    news_task    = AsyncGlobalWeatherEngine.fetch_local_news(city_name)
+    (w, a), news_data = await asyncio.gather(metrics_task, news_task)
     ml_risk    = predict_ml_risk(w)
     aqi_risk   = get_aqi_risk(a["aqi"])
     final_risk = max(ml_risk, aqi_risk)
@@ -613,4 +696,5 @@ async def analyze(
             final_verdict=verdict,
         ),
         advisory=build_advisory(w, a, final_risk, dominant),
+        news=news_data
     )

@@ -20,7 +20,6 @@ def wait_for_backend(url="http://localhost:8000/health", timeout=60):
 
 def main():
     print("Starting FastAPI backend (XGB Sentinel)...")
-    # Make sure your FastAPI file is named main.py (or change "main:app" below)
     backend = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
         stdout=sys.stdout,

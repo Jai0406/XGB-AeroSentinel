@@ -15,12 +15,19 @@ if "loc_query"         not in st.session_state: st.session_state.loc_query      
 if "candidates"        not in st.session_state: st.session_state.candidates        = []
 if "selected_location" not in st.session_state: st.session_state.selected_location = None
 if "analysis_data"     not in st.session_state: st.session_state.analysis_data     = None
+if "search_results_cache" not in st.session_state: st.session_state.search_results_cache = []
 
 def clear_search():
     st.session_state.loc_query         = ""
     st.session_state.candidates        = []
     st.session_state.selected_location = None
     st.session_state.analysis_data     = None
+    st.session_state.search_results_cache = []
+    
+def back_to_results():
+    st.session_state.candidates = st.session_state.search_results_cache
+    st.session_state.selected_location = None
+    st.session_state.analysis_data = None
 
 load_custom_css()
 
@@ -81,11 +88,11 @@ if nav_choice == "Atmosphere Pulse":
                     if res.status_code == 200:
                         data = res.json()
                         if data["auto_selected"]:
-                            # Sirf 1 result — seedha select
                             st.session_state.selected_location = data["candidates"][0]
+                            st.session_state.search_results_cache = [] # Single result me cache nahi chahiye
                         else:
-                            # Multiple results — user ko dikhao
                             st.session_state.candidates = data["candidates"]
+                            st.session_state.search_results_cache = data["candidates"] # Cache me data save karo
                     else:
                         try:
                             err = res.json().get("detail", res.text)
@@ -269,6 +276,12 @@ if nav_choice == "Atmosphere Pulse":
 
         _, col_center, _ = st.columns([4, 2, 4])
         with col_center:
+            # Agar cache me 1 se zyada results hain, tabhi "Back to Results" dikhao
+            if len(st.session_state.get("search_results_cache", [])) > 1:
+                st.button("Back to Results", type="secondary",
+                          on_click=back_to_results, use_container_width=True)
+                st.markdown("<br>", unsafe_allow_html=True) # Thoda space dene ke liye
+                
             st.button("Clear Search", type="secondary",
                       on_click=clear_search, use_container_width=True)
 

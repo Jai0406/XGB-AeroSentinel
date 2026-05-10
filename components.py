@@ -76,22 +76,22 @@ def load_custom_css():
         }
 
         button[kind="secondary"] {
-            background-color: rgba(255, 255, 255, 0.85) !important;
-            border: 1px solid rgba(255, 255, 255, 0.5) !important;
+            background-color: rgba(255, 255, 255, 0.08) !important; /* Premium glassy dark look */
+            border: 1px solid rgba(255, 255, 255, 0.2) !important;
             border-radius: 8px !important;
             padding: 0.3rem 1rem !important;
             min-height: 35px !important;
-            transition: background 0.3s;
+            transition: background 0.3s, border-color 0.3s;
             box-shadow: none !important;
         }
         button[kind="secondary"] * {
-            color: #000000 !important;
-            font-weight: 600 !important;
+            color: #FFFFFF !important; /* Text color changed to white */
+            font-weight: 500 !important;
             font-size: 1rem !important;
         }
         button[kind="secondary"]:hover {
-            background-color: #FFFFFF !important;
-            border-color: #FFFFFF !important;
+            background-color: rgba(255, 255, 255, 0.15) !important;
+            border-color: rgba(255, 255, 255, 0.4) !important;
         }
         button[kind="secondary"]:focus,
         button[kind="secondary"]:active { box-shadow: none !important; }
